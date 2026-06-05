@@ -1,6 +1,6 @@
 {
   "name": "r2",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "Ambient AI desktop companion",
   "main": "dist/electron/main.js",
@@ -13,8 +13,8 @@
     "build:electron": "tsc -p electron/tsconfig.json",
     "build:ax": "swift build -c release --package-path native/ax-helper",
     "build": "npm run build:ax && npm run build:next && npm run build:electron",
-    "dist": "npm run build && electron-builder --mac --arm64 --x64 --publish never",
-    "dist:publish": "npm run build && electron-builder --mac --arm64 --x64 --publish always",
+    "dist": "npm run build && electron-builder --mac --arm64 --publish never",
+    "dist:publish": "npm run build && electron-builder --mac --arm64 --publish always",
     "start": "electron dist/electron/main.js",
     "lint": "next lint",
     "rebuild": "electron-rebuild -f -w better-sqlite3",
@@ -99,15 +99,13 @@
         {
           "target": "dmg",
           "arch": [
-            "arm64",
-            "x64"
+            "arm64"
           ]
         },
         {
           "target": "zip",
           "arch": [
-            "arm64",
-            "x64"
+            "arm64"
           ]
         }
       ],

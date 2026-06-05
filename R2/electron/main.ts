@@ -1,5 +1,6 @@
-import { app, BrowserWindow, ipcMain, screen, Tray, nativeImage, powerMonitor } from 'electron';
+import { app, BrowserWindow, ipcMain, screen, Tray, nativeImage, powerMonitor, protocol, net } from 'electron';
 import * as path from 'path';
+import { pathToFileURL } from 'url';
 import { ActivityTracker } from './tracker/activity';
 import { MemoryStore } from './memory/store';
 import { InterventionEngine } from './intervention/engine';
@@ -30,6 +31,43 @@ import { MediaTranscribeWatcher } from './media/transcribeWatcher';
 import { llmCoordinator } from './llm/ollama';
 
 const isDev = process.env.NODE_ENV === 'development';
+
+// Custom protocol so the static-exported Next.js bundle works under
+// packaged Electron. The HTML emits root-absolute paths like
+// /_next/static/chunks/foo.js — under file:// those resolve to
+// file:///_next/... and 404, leaving a blank renderer. Registering
+// `app://` lets every asset request resolve relative to `out/`.
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: 'app',
+    privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true }
+  }
+]);
+
+function outRoot(): string {
+  // dist/electron/main.js -> ../../out (sibling of dist/)
+  return path.join(__dirname, '..', '..', 'out');
+}
+
+function registerAppProtocol() {
+  protocol.handle('app', async (request) => {
+    try {
+      const url = new URL(request.url);
+      let pathname = decodeURIComponent(url.pathname || '/');
+      // Strip leading slash for path.join; collapse `..` traversal.
+      const normalized = path.normalize(pathname).replace(/^([/\\])+/, '');
+      let filePath = path.join(outRoot(), normalized);
+      // If the URL ends with `/` (e.g. app://r2/setup/), serve its index.html.
+      if (pathname.endsWith('/') || normalized === '' || normalized === '.') {
+        filePath = path.join(filePath, 'index.html');
+      }
+      return await net.fetch(pathToFileURL(filePath).toString());
+    } catch (err) {
+      console.error('[app-protocol] failed', request.url, err);
+      return new Response('Not Found', { status: 404 });
+    }
+  });
+}
 
 let notchWindow: BrowserWindow | null = null;
 let setupWindow: BrowserWindow | null = null;
@@ -91,13 +129,16 @@ function createNotchWindow() {
 
   const url = isDev
     ? 'http://localhost:3000'
-    : `file://${path.join(__dirname, '../../out/index.html')}`;
+    : 'app://r2/index.html';
 
   notchWindow.loadURL(url);
 
-  if (isDev) {
+  if (isDev || process.env.R2_DEVTOOLS === '1') {
     notchWindow.webContents.openDevTools({ mode: 'detach' });
   }
+  notchWindow.webContents.on('did-fail-load', (_e, code, desc, validatedURL) => {
+    console.error('[notch] did-fail-load', code, desc, validatedURL);
+  });
 }
 
 function createSetupWindow() {
@@ -133,8 +174,15 @@ function createSetupWindow() {
 
   const url = isDev
     ? 'http://localhost:3000/setup'
-    : `file://${path.join(__dirname, '../../out/setup/index.html')}`;
+    : 'app://r2/setup/index.html';
   setupWindow.loadURL(url);
+
+  if (process.env.R2_DEVTOOLS === '1') {
+    setupWindow.webContents.openDevTools({ mode: 'detach' });
+  }
+  setupWindow.webContents.on('did-fail-load', (_e, code, desc, validatedURL) => {
+    console.error('[setup] did-fail-load', code, desc, validatedURL);
+  });
 
   setupWindow.on('closed', () => {
     setupWindow = null;
@@ -174,8 +222,15 @@ function createConfigWindow() {
 
   const url = isDev
     ? 'http://localhost:3000/configure'
-    : `file://${path.join(__dirname, '../../out/configure/index.html')}`;
+    : 'app://r2/configure/index.html';
   configWindow.loadURL(url);
+
+  if (process.env.R2_DEVTOOLS === '1') {
+    configWindow.webContents.openDevTools({ mode: 'detach' });
+  }
+  configWindow.webContents.on('did-fail-load', (_e, code, desc, validatedURL) => {
+    console.error('[configure] did-fail-load', code, desc, validatedURL);
+  });
 
   configWindow.on('closed', () => {
     configWindow = null;
@@ -279,6 +334,9 @@ function wireIpc() {
 
 app.whenReady().then(async () => {
   if (process.platform === 'darwin') app.dock?.hide();
+
+  // Register custom protocol BEFORE any window loads its URL.
+  registerAppProtocol();
 
   // Auto-update — packaged builds only; no-op in dev.
   initAutoUpdater();
