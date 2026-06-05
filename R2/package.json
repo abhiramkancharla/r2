@@ -1,0 +1,147 @@
+{
+  "name": "r2",
+  "version": "0.1.1",
+  "private": true,
+  "description": "Ambient AI desktop companion",
+  "main": "dist/electron/main.js",
+  "scripts": {
+    "dev:next": "next dev -p 3000",
+    "dev:ax": "swift build --package-path native/ax-helper",
+    "dev:electron": "wait-on http://localhost:3000 && npm run dev:ax && tsc -p electron/tsconfig.json && cross-env NODE_ENV=development electron dist/electron/main.js",
+    "dev": "concurrently -k -n NEXT,ELEC -c blue,magenta \"npm:dev:next\" \"npm:dev:electron\"",
+    "build:next": "cross-env BUILD_TARGET=electron next build",
+    "build:electron": "tsc -p electron/tsconfig.json",
+    "build:ax": "swift build -c release --package-path native/ax-helper",
+    "build": "npm run build:ax && npm run build:next && npm run build:electron",
+    "dist": "npm run build && electron-builder --mac --arm64 --x64 --publish never",
+    "dist:publish": "npm run build && electron-builder --mac --arm64 --x64 --publish always",
+    "start": "electron dist/electron/main.js",
+    "lint": "next lint",
+    "rebuild": "electron-rebuild -f -w better-sqlite3",
+    "diary": "tsc -p electron/tsconfig.json && node scripts/diary-cli.js",
+    "diary:catchup": "tsc -p electron/tsconfig.json && node scripts/diary-cli.js --catchup",
+    "persona": "tsc -p electron/tsconfig.json && node scripts/persona-cli.js weekly",
+    "persona:catchup": "tsc -p electron/tsconfig.json && node scripts/persona-cli.js weekly --catchup",
+    "persona:merge": "tsc -p electron/tsconfig.json && node scripts/persona-cli.js merge",
+    "postinstall": "electron-builder install-app-deps || true"
+  },
+  "dependencies": {
+    "@radix-ui/react-slot": "^1.2.4",
+    "@radix-ui/react-tooltip": "^1.2.8",
+    "active-win": "^8.2.1",
+    "better-sqlite3": "^11.3.0",
+    "chokidar": "^3.6.0",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "electron-store": "^10.0.0",
+    "electron-updater": "^6.8.3",
+    "framer-motion": "^11.11.0",
+    "gray-matter": "^4.0.3",
+    "lucide-react": "^1.16.0",
+    "next": "^14.2.35",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "tailwind-merge": "^3.6.0",
+    "tailwindcss-animate": "^1.0.7"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^3.7.0",
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/node": "^20.16.11",
+    "@types/react": "18.3.11",
+    "@types/react-dom": "18.3.0",
+    "autoprefixer": "^10.4.20",
+    "concurrently": "^9.0.1",
+    "cross-env": "^7.0.3",
+    "electron": "^32.2.0",
+    "electron-builder": "^25.0.5",
+    "eslint": "^8.57.1",
+    "eslint-config-next": "^14.2.35",
+    "postcss": "^8.4.47",
+    "tailwindcss": "^3.4.13",
+    "typescript": "^5.6.3",
+    "wait-on": "^8.0.1"
+  },
+  "build": {
+    "appId": "com.r2.companion",
+    "productName": "R2",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/electron/**/*",
+      "out/**/*",
+      "package.json",
+      "!**/*.map",
+      "!**/.DS_Store"
+    ],
+    "extraResources": [
+      {
+        "from": "native/ax-helper/.build/release/AXHelper",
+        "to": "bin/ax-helper"
+      }
+    ],
+    "asarUnpack": [
+      "node_modules/better-sqlite3/**/*",
+      "node_modules/active-win/**/*"
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "notarize": {
+        "teamId": "${env.APPLE_TEAM_ID}"
+      },
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "extendInfo": {
+        "LSUIElement": true,
+        "NSAccessibilityUsageDescription": "R2 reads the focused text field via macOS Accessibility to capture what you submit (Enter-pressed sentences). Required for the ambient capture features.",
+        "NSAppleEventsUsageDescription": "R2 uses AppleScript to read the currently-playing song from Music/Spotify.",
+        "NSCameraUsageDescription": "Not used.",
+        "NSMicrophoneUsageDescription": "Not used."
+      }
+    },
+    "dmg": {
+      "title": "R2 — Ambient Companion",
+      "contents": [
+        {
+          "x": 130,
+          "y": 220,
+          "type": "file"
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "abhiramkancharla",
+        "repo": "r2",
+        "releaseType": "release"
+      }
+    ]
+  }
+}
