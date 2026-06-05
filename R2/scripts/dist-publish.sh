@@ -7,33 +7,46 @@ set -euo pipefail
 
 ENV_FILE="${R2_BUILD_ENV:-$HOME/.r2-build.env}"
 
-if [ ! -f "$ENV_FILE" ]; then
-  echo "❌ Missing env file: $ENV_FILE" >&2
-  echo "   Create it with GH_TOKEN, APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID." >&2
-  exit 1
-fi
-
-# shellcheck disable=SC1090
-set -a
-. "$ENV_FILE"
-set +a
-
-# Sanity check — fail loudly with actionable message instead of letting
-# electron-builder spew a 200-line stack trace.
-missing=()
-for var in GH_TOKEN APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
-  if [ -z "${!var:-}" ] || [[ "${!var}" == PASTE_* ]]; then
-    missing+=("$var")
-  fi
-done
-if [ ${#missing[@]} -gt 0 ]; then
-  echo "❌ The following vars are unset or still placeholders in $ENV_FILE:" >&2
-  printf '   - %s\n' "${missing[@]}" >&2
-  echo "   Edit that file and re-run." >&2
-  exit 1
-fi
-
 MODE="${1:-publish}"
+
+# Determine which env vars each mode requires.
+# - publish/local need full set (notarize + upload OR notarize only).
+# - sideload only needs nothing-from-Apple (sign uses keychain identity).
+required=()
+case "$MODE" in
+  publish)  required=(GH_TOKEN APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID) ;;
+  local)    required=(APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID) ;;
+  sideload) required=() ;;  # sign-only, no Apple service round-trip
+  *)
+    echo "Usage: $0 [publish|local|sideload]" >&2
+    echo "  publish  = build + sign + notarize + upload to GitHub Releases" >&2
+    echo "  local    = build + sign + notarize, no upload (DMG in release/)" >&2
+    echo "  sideload = build + sign only, skip notarize (use when Apple's notarytool is down)" >&2
+    exit 1
+    ;;
+esac
+
+if [ -f "$ENV_FILE" ]; then
+  # shellcheck disable=SC1090
+  set -a
+  . "$ENV_FILE"
+  set +a
+fi
+
+if [ ${#required[@]} -gt 0 ]; then
+  missing=()
+  for var in "${required[@]}"; do
+    if [ -z "${!var:-}" ] || [[ "${!var}" == PASTE_* ]]; then
+      missing+=("$var")
+    fi
+  done
+  if [ ${#missing[@]} -gt 0 ]; then
+    echo "❌ The following vars are unset or still placeholders in $ENV_FILE:" >&2
+    printf '   - %s\n' "${missing[@]}" >&2
+    echo "   Edit that file and re-run." >&2
+    exit 1
+  fi
+fi
 
 case "$MODE" in
   publish)
@@ -46,8 +59,9 @@ case "$MODE" in
     npm run build
     npx electron-builder --mac --arm64 --publish never
     ;;
-  *)
-    echo "Usage: $0 [publish|local]" >&2
-    exit 1
+  sideload)
+    echo "→ build sign-only (no notarize, no upload) — Gatekeeper bypass on first launch"
+    npm run build
+    npx electron-builder --mac --arm64 --publish never -c.mac.notarize=false
     ;;
 esac

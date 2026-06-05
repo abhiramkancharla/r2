@@ -15,6 +15,7 @@
     "build": "npm run build:ax && npm run build:next && npm run build:electron",
     "dist": "bash scripts/dist-publish.sh local",
     "dist:publish": "bash scripts/dist-publish.sh publish",
+    "dist:sideload": "bash scripts/dist-publish.sh sideload",
     "dist:raw": "npm run build && electron-builder --mac --arm64 --publish never",
     "start": "electron dist/electron/main.js",
     "lint": "next lint",
@@ -93,9 +94,7 @@
       "gatekeeperAssess": false,
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
-      "notarize": {
-        "teamId": "${env.APPLE_TEAM_ID}"
-      },
+      "notarize": true,
       "target": [
         {
           "target": "dmg",
