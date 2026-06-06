@@ -89,8 +89,17 @@ export default function EyeOrb() {
     setIntervention(null);
   };
 
+  // Distinguish "user has never configured an LLM" (sentinel model name set
+  // by main.ts on first boot) from "user has a config, but the model named
+  // there isn't installed" so the tagline can be actionable in both cases.
+  const onlyNotConfigured =
+    llmMissing.missing &&
+    llmMissing.models.length > 0 &&
+    llmMissing.models.every((m) => m === 'not-configured');
   const subtitle = llmMissing.missing
-    ? `INSTALL LLM — ${llmMissing.models.join(', ')}`
+    ? onlyNotConfigured
+      ? 'CONFIGURE LLM — open settings'
+      : `INSTALL LLM — ${llmMissing.models.filter((m) => m !== 'not-configured').join(', ')}`
     : statusMessage ??
       (llmBusy ? 'thinking…' : capturing ? 'capturing…' : 'R2 — watching, quietly');
 

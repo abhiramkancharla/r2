@@ -6,12 +6,19 @@ export type LlmConfig = {
   mainModel: string;       // bigger model, tried first
   fallbackModel: string;   // smaller fallback, used on transport failure
   baseUrl: string;         // e.g. http://127.0.0.1:11434
+  /**
+   * True once the user has successfully saved a working configuration at least
+   * once (test ping returned a non-empty response). On a fresh install this is
+   * false so the orb starts red, prompting the user to open Configure.
+   */
+  verified: boolean;
 };
 
 export const DEFAULT_CONFIG: LlmConfig = {
   mainModel: 'qwen2.5:14b',
   fallbackModel: 'qwen2.5:7b',
-  baseUrl: 'http://127.0.0.1:11434'
+  baseUrl: 'http://127.0.0.1:11434',
+  verified: false
 };
 
 let cache: LlmConfig | null = null;
@@ -28,7 +35,8 @@ export function loadLlmConfig(): LlmConfig {
     cache = {
       mainModel: typeof parsed.mainModel === 'string' && parsed.mainModel ? parsed.mainModel : DEFAULT_CONFIG.mainModel,
       fallbackModel: typeof parsed.fallbackModel === 'string' && parsed.fallbackModel ? parsed.fallbackModel : DEFAULT_CONFIG.fallbackModel,
-      baseUrl: typeof parsed.baseUrl === 'string' && parsed.baseUrl ? parsed.baseUrl : DEFAULT_CONFIG.baseUrl
+      baseUrl: typeof parsed.baseUrl === 'string' && parsed.baseUrl ? parsed.baseUrl : DEFAULT_CONFIG.baseUrl,
+      verified: parsed.verified === true
     };
   } catch {
     cache = { ...DEFAULT_CONFIG };
@@ -38,10 +46,25 @@ export function loadLlmConfig(): LlmConfig {
 
 export function saveLlmConfig(cfg: Partial<LlmConfig>): LlmConfig {
   const current = loadLlmConfig();
+  // When any of the model/url fields change, drop the verified flag — the new
+  // combination has to pass its own test ping before we trust it.
+  const mainModel = cfg.mainModel?.trim() || current.mainModel;
+  const fallbackModel = cfg.fallbackModel?.trim() || current.fallbackModel;
+  const baseUrl = normalizeBaseUrl(cfg.baseUrl?.trim() || current.baseUrl);
+  const fieldsChanged =
+    mainModel !== current.mainModel ||
+    fallbackModel !== current.fallbackModel ||
+    baseUrl !== current.baseUrl;
   const next: LlmConfig = {
-    mainModel: cfg.mainModel?.trim() || current.mainModel,
-    fallbackModel: cfg.fallbackModel?.trim() || current.fallbackModel,
-    baseUrl: normalizeBaseUrl(cfg.baseUrl?.trim() || current.baseUrl)
+    mainModel,
+    fallbackModel,
+    baseUrl,
+    verified:
+      typeof cfg.verified === 'boolean'
+        ? cfg.verified
+        : fieldsChanged
+          ? false
+          : current.verified
   };
   fs.mkdirSync(path.dirname(configPath()), { recursive: true });
   fs.writeFileSync(configPath(), JSON.stringify(next, null, 2), 'utf8');
@@ -65,6 +88,7 @@ export function readLlmConfigSafe(): LlmConfig {
   return {
     mainModel: process.env.R2_LLM_MODEL || DEFAULT_CONFIG.mainModel,
     fallbackModel: process.env.R2_LLM_FALLBACK_MODEL || DEFAULT_CONFIG.fallbackModel,
-    baseUrl: process.env.R2_LLM_URL || DEFAULT_CONFIG.baseUrl
+    baseUrl: process.env.R2_LLM_URL || DEFAULT_CONFIG.baseUrl,
+    verified: false
   };
 }

@@ -207,6 +207,88 @@ class LlmHealth extends EventEmitter {
 export const llmHealth = new LlmHealth();
 
 /**
+ * Lightweight reachability + model-availability probe used by the Configure
+ * Save flow. Does NOT go through the chat queue — we want the result fast and
+ * we don't want a stuck background diary call to gate the user's "Save" click.
+ *
+ * Sequence:
+ *   1. GET `/api/tags` to verify the Ollama daemon answers at all.
+ *   2. POST `/api/chat` with `num_predict: 1` to verify the configured model
+ *      is actually pulled (Ollama 404s with "model X not found" otherwise).
+ *
+ * Returns `{ ok: true }` on full success.
+ * Returns `{ ok: false, reason, detail? }` on any failure, with `reason`
+ * narrow enough that the UI can show actionable text.
+ */
+export type LlmPingResult =
+  | { ok: true }
+  | { ok: false; reason: 'unreachable' | 'missing_model' | 'http' | 'empty'; detail?: string };
+
+export async function pingLlm(opts: { baseUrl: string; model: string; timeoutMs?: number }): Promise<LlmPingResult> {
+  const baseUrl = opts.baseUrl.replace(/\/+$/, '');
+  const timeoutMs = opts.timeoutMs ?? 15_000;
+
+  // Step 1 — daemon reachable?
+  {
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const r = await fetch(`${baseUrl}/api/tags`, { signal: controller.signal });
+      if (!r.ok) {
+        return { ok: false, reason: 'http', detail: `Ollama responded ${r.status} on /api/tags` };
+      }
+    } catch (err: any) {
+      return {
+        ok: false,
+        reason: 'unreachable',
+        detail: `Could not reach Ollama at ${baseUrl}. Is it running? (${err?.message ?? err})`
+      };
+    } finally {
+      clearTimeout(t);
+    }
+  }
+
+  // Step 2 — model present?
+  {
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const r = await fetch(`${baseUrl}/api/chat`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: opts.model,
+          messages: [{ role: 'user', content: 'ping' }],
+          stream: false,
+          keep_alive: '5m',
+          options: { num_predict: 1, temperature: 0 }
+        }),
+        signal: controller.signal
+      });
+      if (!r.ok) {
+        const text = await r.text().catch(() => '');
+        if (r.status === 404 && /model.*not found/i.test(text)) {
+          return { ok: false, reason: 'missing_model', detail: `Model "${opts.model}" is not pulled. Run: ollama pull ${opts.model}` };
+        }
+        return { ok: false, reason: 'http', detail: `Ollama HTTP ${r.status}: ${text || r.statusText}` };
+      }
+      const json: any = await r.json().catch(() => null);
+      const content = String(json?.message?.content ?? '');
+      // num_predict:1 may return empty string for some models — still counts as
+      // a working round-trip. Only flag empty if the response object is broken.
+      if (!json || typeof json !== 'object') {
+        return { ok: false, reason: 'empty', detail: 'Ollama returned no parsable response.' };
+      }
+      return { ok: true };
+    } catch (err: any) {
+      return { ok: false, reason: 'unreachable', detail: `Chat request failed: ${err?.message ?? err}` };
+    } finally {
+      clearTimeout(t);
+    }
+  }
+}
+
+/**
  * Try `mainModel` first; on transport / missing-model error, retry with
  * `fallbackModel`. If BOTH fail with missing_model, reports to llmHealth so
  * the UI can prompt the user to install a model. Throws the last error.

@@ -4,7 +4,7 @@ import { motion } from 'framer-motion';
 import { Loader2, Check, AlertTriangle, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
-type LlmConfig = { mainModel: string; fallbackModel: string; baseUrl: string };
+type LlmConfig = { mainModel: string; fallbackModel: string; baseUrl: string; verified?: boolean };
 
 export default function ConfigurePage() {
   const [cfg, setCfg] = useState<LlmConfig | null>(null);
@@ -21,14 +21,21 @@ export default function ConfigurePage() {
     e.preventDefault();
     if (!cfg) return;
     setErr(null);
+    setSaved(false);
     setSaving(true);
     try {
-      const next = await (window as any).r2.config.save(cfg);
-      setCfg(next);
-      setSaved(true);
-      window.setTimeout(() => {
-        (window as any).r2.config.close();
-      }, 900);
+      // Save now pings the LLM; result indicates whether it worked.
+      const result = await (window as any).r2.config.save(cfg);
+      if (result && result.ok) {
+        setCfg(result.config);
+        setSaved(true);
+        window.setTimeout(() => {
+          (window as any).r2.config.close();
+        }, 900);
+      } else {
+        if (result?.config) setCfg(result.config);
+        setErr(result?.error ?? 'Could not reach the LLM with that configuration.');
+      }
     } catch (e: any) {
       setErr(e?.message ?? 'Save failed.');
     } finally {

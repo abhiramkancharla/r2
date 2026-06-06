@@ -97,7 +97,15 @@ const api = {
   },
   config: {
     get: () => ipcRenderer.invoke('config:get'),
-    save: (cfg: { mainModel?: string; fallbackModel?: string; baseUrl?: string }) => ipcRenderer.invoke('config:save', cfg),
+    // Returns `{ ok: true, config }` on a successful save+ping, or
+    // `{ ok: false, config, error }` if the test call to the LLM failed.
+    // The renderer should use the `ok` flag to decide whether to show a
+    // success state and close the window, or display the error inline.
+    save: (cfg: { mainModel?: string; fallbackModel?: string; baseUrl?: string }) =>
+      ipcRenderer.invoke('config:save', cfg) as Promise<
+        | { ok: true; config: { mainModel: string; fallbackModel: string; baseUrl: string; verified: boolean } }
+        | { ok: false; config: { mainModel: string; fallbackModel: string; baseUrl: string; verified: boolean }; error: string }
+      >,
     open: () => ipcRenderer.send('window:openConfig'),
     close: () => ipcRenderer.send('window:closeConfig'),
     onChange: (cb: (cfg: { mainModel: string; fallbackModel: string; baseUrl: string }) => void): (() => void) => {

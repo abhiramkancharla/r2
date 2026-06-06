@@ -15,7 +15,7 @@ import {
   catchUpMissingMerge,
   scheduleDataDrivenPersona
 } from './llm/persona';
-import { prewarm as prewarmLLM, llmHealth } from './llm/ollama';
+import { prewarm as prewarmLLM, llmHealth, pingLlm } from './llm/ollama';
 import { loadLlmConfig, saveLlmConfig, type LlmConfig } from './config/store';
 import { PROMPTS } from './llm/prompts';
 import { vaultPaths } from './vault/paths';
@@ -312,14 +312,28 @@ function wireIpc() {
   ipcMain.handle('vault:setup', async () => setupAll(vaultPaths()));
   ipcMain.handle('config:get', async () => loadLlmConfig());
   ipcMain.handle('config:save', async (_e, cfg: Partial<LlmConfig>) => {
-    const next = saveLlmConfig(cfg);
-    // Clear stale missing-model flag — user may have just fixed it.
-    llmHealth.clear();
-    // Notify all windows so eye state refreshes.
-    for (const w of BrowserWindow.getAllWindows()) {
-      w.webContents.send('config:changed', next);
+    // First persist whatever the user typed (verified defaults to false on
+    // field change — see saveLlmConfig).
+    const saved = saveLlmConfig(cfg);
+
+    // Ping the new config. If it works, mark verified + clear missing flag.
+    // If it fails, keep verified=false and report missing so the eye stays
+    // red and the configure dialog can show the actual error.
+    const ping = await pingLlm({ baseUrl: saved.baseUrl, model: saved.mainModel });
+    if (ping.ok) {
+      const next = saveLlmConfig({ verified: true });
+      llmHealth.clear();
+      for (const w of BrowserWindow.getAllWindows()) {
+        w.webContents.send('config:changed', next);
+      }
+      return { ok: true, config: next };
+    } else {
+      llmHealth.reportMissing(saved.mainModel);
+      for (const w of BrowserWindow.getAllWindows()) {
+        w.webContents.send('config:changed', saved);
+      }
+      return { ok: false, config: saved, error: ping.detail ?? ping.reason };
     }
-    return next;
   });
   ipcMain.on('window:openConfig', () => createConfigWindow());
   ipcMain.on('window:closeConfig', () => {
@@ -535,6 +549,26 @@ app.whenReady().then(async () => {
     }
     if (s.missing) console.log(`[llm] MISSING models: ${s.models.join(', ')} — user must pull or change config`);
   });
+
+  // First-run state: if the user has never verified an LLM config, start the
+  // orb red so they know to open Configure. The sentinel "not-configured" is
+  // recognized by the renderer to show "CONFIGURE LLM" instead of "INSTALL
+  // LLM". Cleared automatically once `config:save` succeeds its ping.
+  (() => {
+    const cfg = loadLlmConfig();
+    if (!cfg.verified) {
+      llmHealth.reportMissing('not-configured');
+      // Re-emit shortly after window creation in case the renderer wasn't
+      // attached when the first emit fired.
+      setTimeout(() => {
+        if (!cfg.verified) {
+          for (const w of BrowserWindow.getAllWindows()) {
+            w.webContents.send('llm:missing', { missing: true, models: llmHealth.missingModels });
+          }
+        }
+      }, 2000);
+    }
+  })();
 
   // Daily Obsidian diary @ 23:50 local — calls local Ollama against today's sessions
   const vaultDir = path.join(app.getPath('home'), 'R2Vault');
