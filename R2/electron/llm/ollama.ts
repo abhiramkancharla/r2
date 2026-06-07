@@ -248,40 +248,34 @@ export async function pingLlm(opts: { baseUrl: string; model: string; timeoutMs?
     }
   }
 
-  // Step 2 — model present?
+  // Step 2 — model present? Use /api/show instead of /api/chat. /api/show
+  // returns metadata for a pulled model in milliseconds; /api/chat would
+  // trigger a weight load that can take 30–90 s for a 14B model on cold
+  // start, which blows past any reasonable Save-button timeout.
   {
     const controller = new AbortController();
     const t = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const r = await fetch(`${baseUrl}/api/chat`, {
+      const r = await fetch(`${baseUrl}/api/show`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          model: opts.model,
-          messages: [{ role: 'user', content: 'ping' }],
-          stream: false,
-          keep_alive: '5m',
-          options: { num_predict: 1, temperature: 0 }
-        }),
+        body: JSON.stringify({ name: opts.model }),
         signal: controller.signal
       });
-      if (!r.ok) {
-        const text = await r.text().catch(() => '');
-        if (r.status === 404 && /model.*not found/i.test(text)) {
-          return { ok: false, reason: 'missing_model', detail: `Model "${opts.model}" is not pulled. Run: ollama pull ${opts.model}` };
-        }
-        return { ok: false, reason: 'http', detail: `Ollama HTTP ${r.status}: ${text || r.statusText}` };
+      if (r.ok) {
+        return { ok: true };
       }
-      const json: any = await r.json().catch(() => null);
-      const content = String(json?.message?.content ?? '');
-      // num_predict:1 may return empty string for some models — still counts as
-      // a working round-trip. Only flag empty if the response object is broken.
-      if (!json || typeof json !== 'object') {
-        return { ok: false, reason: 'empty', detail: 'Ollama returned no parsable response.' };
+      const text = await r.text().catch(() => '');
+      if (r.status === 404 || /not found|no such model|does not exist/i.test(text)) {
+        return {
+          ok: false,
+          reason: 'missing_model',
+          detail: `Model "${opts.model}" is not pulled. Run: ollama pull ${opts.model}`
+        };
       }
-      return { ok: true };
+      return { ok: false, reason: 'http', detail: `Ollama HTTP ${r.status}: ${text || r.statusText}` };
     } catch (err: any) {
-      return { ok: false, reason: 'unreachable', detail: `Chat request failed: ${err?.message ?? err}` };
+      return { ok: false, reason: 'unreachable', detail: `Model check failed: ${err?.message ?? err}` };
     } finally {
       clearTimeout(t);
     }
