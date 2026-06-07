@@ -1,25 +1,59 @@
+# ── Dependencies ──────────────────────────────────────────────────────────
 node_modules/
+.pnp.*
+.yarn/cache
+.yarn/install-state.gz
+
+# ── Build output ──────────────────────────────────────────────────────────
 .next/
 out/
 dist/
 renderer-out/
-*.log
-.DS_Store
-.env
-.env.local
-.env.*.local
+electron-out/
+release/
+*.tsbuildinfo
 
-# user vault — local memory must never be committed
+# ── Native (Swift) build artifacts ────────────────────────────────────────
+native/ax-helper/.build/
+native/ax-helper/Package.resolved
+**/.swiftpm/
+
+# ── Secrets / environment ─────────────────────────────────────────────────
+# Never commit any actual env file. `.env.example` (template, no secrets)
+# is intentionally NOT ignored.
+.env
+.env.*
+!.env.example
+*.env
+.r2-build.env
+
+# ── Local AI / vault / user data ──────────────────────────────────────────
+# User-owned local data, never source.
 R2Vault/
+R2Obsidian/
 *.db
 *.db-journal
 *.db-wal
 *.db-shm
 
-# editor
+# ── Internal / private project notes ──────────────────────────────────────
+# CLAUDE.md is the project's internal instruction file — do not publish.
+CLAUDE.md
+.claude/
+.cursor/
+.aider*
+
+# ── Logs ──────────────────────────────────────────────────────────────────
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# ── Editor / OS junk ──────────────────────────────────────────────────────
 .vscode/
 .idea/
-
-# build artifacts
-release/
-electron-out/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
