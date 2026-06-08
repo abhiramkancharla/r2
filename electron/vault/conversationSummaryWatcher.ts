@@ -3,6 +3,8 @@ import * as os from 'os';
 import * as path from 'path';
 import chokidar from 'chokidar';
 import { summarizeConversation } from '../llm/conversationSummary';
+import type { EmbeddingIndex } from './embeddingIndex';
+import { linkChatToVault } from './graphLinker';
 
 const DEBOUNCE_MS = 30_000; // 30s settle after last write
 
@@ -24,10 +26,19 @@ export class ConversationSummaryWatcher {
   private queue: string[] = [];
   private processing: string | null = null;
 
+  private embedIndex: EmbeddingIndex | null = null;
+
   constructor(vaultDir: string, obsidianDir?: string) {
     this.vaultDir = vaultDir;
     this.obsidianDir = obsidianDir ?? path.join(os.homedir(), 'Downloads', 'R2Obsidian');
     this.convDir = path.join(vaultDir, 'conversations');
+  }
+
+  /** Optionally attach an embedding index so new summaries auto-link to
+   *  related notes via cosine similarity. If null, the linker falls back to
+   *  keyword overlap. */
+  setEmbeddingIndex(idx: EmbeddingIndex | null) {
+    this.embedIndex = idx;
   }
 
   start() {
@@ -108,8 +119,26 @@ export class ConversationSummaryWatcher {
       console.log(`[conv-md] processing ${path.relative(this.vaultDir, jsonPath)} (remaining=${this.queue.length})`);
       try {
         const r = await summarizeConversation({ jsonPath, obsidianDir: this.obsidianDir });
-        if (r.ok) console.log(`[conv-md] ✓ ${r.site}/${r.chatName} → ${r.outputPath} (${r.totalDurationMs}ms)`);
-        else      console.log(`[conv-md] skipped ${r.site}/${r.chatName}: ${r.reason}`);
+        if (r.ok) {
+          console.log(`[conv-md] ✓ ${r.site}/${r.chatName} → ${r.outputPath} (${r.totalDurationMs}ms)`);
+          // Fire-and-forget: append "## Related" wiki-links to the new summary.
+          // Failures here MUST NOT block summary generation.
+          linkChatToVault({
+            chatMdPath: r.outputPath,
+            obsidianDir: this.obsidianDir,
+            index: this.embedIndex
+          })
+            .then((lr) => {
+              if (lr.ok && lr.links.length > 0) {
+                console.log(
+                  `[graph-link] ${r.site}/${r.chatName} ← ${lr.links.length} links (${lr.mode})`
+                );
+              }
+            })
+            .catch((err) => console.warn('[graph-link] failed', err?.message ?? err));
+        } else {
+          console.log(`[conv-md] skipped ${r.site}/${r.chatName}: ${r.reason}`);
+        }
       } catch (err: any) {
         console.error('[conv-md] task failed', err?.message ?? err);
       } finally {

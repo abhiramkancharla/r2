@@ -101,10 +101,39 @@ const api = {
     // `{ ok: false, config, error }` if the test call to the LLM failed.
     // The renderer should use the `ok` flag to decide whether to show a
     // success state and close the window, or display the error inline.
-    save: (cfg: { mainModel?: string; fallbackModel?: string; baseUrl?: string }) =>
+    save: (cfg: {
+      mainModel?: string;
+      fallbackModel?: string;
+      baseUrl?: string;
+      embedModel?: string;
+      autoLinkVault?: boolean;
+    }) =>
       ipcRenderer.invoke('config:save', cfg) as Promise<
-        | { ok: true; config: { mainModel: string; fallbackModel: string; baseUrl: string; verified: boolean } }
-        | { ok: false; config: { mainModel: string; fallbackModel: string; baseUrl: string; verified: boolean }; error: string }
+        | {
+            ok: true;
+            config: {
+              mainModel: string;
+              fallbackModel: string;
+              baseUrl: string;
+              verified: boolean;
+              embedModel: string;
+              autoLinkVault: boolean;
+            };
+            embedOk?: boolean;
+            embedDetail?: string;
+          }
+        | {
+            ok: false;
+            config: {
+              mainModel: string;
+              fallbackModel: string;
+              baseUrl: string;
+              verified: boolean;
+              embedModel: string;
+              autoLinkVault: boolean;
+            };
+            error: string;
+          }
       >,
     open: () => ipcRenderer.send('window:openConfig'),
     close: () => ipcRenderer.send('window:closeConfig'),

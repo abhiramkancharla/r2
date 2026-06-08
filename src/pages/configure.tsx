@@ -4,13 +4,21 @@ import { motion } from 'framer-motion';
 import { Loader2, Check, AlertTriangle, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
-type LlmConfig = { mainModel: string; fallbackModel: string; baseUrl: string; verified?: boolean };
+type LlmConfig = {
+  mainModel: string;
+  fallbackModel: string;
+  baseUrl: string;
+  verified?: boolean;
+  embedModel?: string;
+  autoLinkVault?: boolean;
+};
 
 export default function ConfigurePage() {
   const [cfg, setCfg] = useState<LlmConfig | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [embedNote, setEmbedNote] = useState<string | null>(null);
 
   useEffect(() => {
     if (typeof window === 'undefined' || !(window as any).r2?.config) return;
@@ -21,6 +29,7 @@ export default function ConfigurePage() {
     e.preventDefault();
     if (!cfg) return;
     setErr(null);
+    setEmbedNote(null);
     setSaved(false);
     setSaving(true);
     try {
@@ -29,9 +38,16 @@ export default function ConfigurePage() {
       if (result && result.ok) {
         setCfg(result.config);
         setSaved(true);
-        window.setTimeout(() => {
-          (window as any).r2.config.close();
-        }, 900);
+        // Embed model is non-blocking — surface as a soft note, not an error.
+        if (result.embedOk === false && result.embedDetail) {
+          setEmbedNote(result.embedDetail);
+        }
+        // Hold the dialog open a bit longer if there's an embed note so the
+        // user sees it before auto-close.
+        window.setTimeout(
+          () => (window as any).r2.config.close(),
+          result.embedOk === false ? 3500 : 900
+        );
       } else {
         if (result?.config) setCfg(result.config);
         setErr(result?.error ?? 'Could not reach the LLM with that configuration.');
@@ -103,6 +119,36 @@ export default function ConfigurePage() {
                 value={cfg.baseUrl}
                 onChange={(v) => setCfg({ ...cfg, baseUrl: v })}
               />
+              <Field
+                label="EMBED MODEL"
+                hint="Optional. Powers Obsidian graph auto-linking. e.g. nomic-embed-text"
+                value={cfg.embedModel ?? ''}
+                onChange={(v) => setCfg({ ...cfg, embedModel: v })}
+              />
+              <label className="flex items-start gap-2 select-none cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={cfg.autoLinkVault ?? true}
+                  onChange={(e) => setCfg({ ...cfg, autoLinkVault: e.target.checked })}
+                  className="mt-0.5 accent-white"
+                />
+                <span
+                  className="text-[10px] text-white/75 leading-tight"
+                  style={{ letterSpacing: '0.18em', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}
+                >
+                  AUTO-LINK CHATS TO VAULT
+                  <span className="block text-[9.5px] text-white/35 mt-0.5" style={{ letterSpacing: '0.06em' }}>
+                    Append [[wiki-links]] to related notes in each new chat summary.
+                  </span>
+                </span>
+              </label>
+
+              {embedNote && (
+                <div className="border border-amber-300/40 bg-amber-500/10 px-3 py-2 flex items-start gap-2">
+                  <AlertTriangle className="w-3.5 h-3.5 text-amber-300 mt-px shrink-0" strokeWidth={1.6} />
+                  <span className="text-[10.5px] text-amber-200/90" style={{ letterSpacing: '0.06em' }}>{embedNote}</span>
+                </div>
+              )}
 
               {err && (
                 <div className="border border-rose-300/40 bg-rose-500/10 px-3 py-2 flex items-start gap-2">

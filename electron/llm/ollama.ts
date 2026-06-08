@@ -207,6 +207,52 @@ class LlmHealth extends EventEmitter {
 export const llmHealth = new LlmHealth();
 
 /**
+ * Single-document embedding via Ollama. Used by the vault graph linker to
+ * embed both indexed notes and incoming chats. Returns a Float32Array of the
+ * model's native dimensionality (768 for nomic-embed-text, 1024 for
+ * mxbai-embed-large, etc).
+ *
+ * Throws LlmError on failure so callers can fall back to keyword mode.
+ */
+export async function embed(opts: {
+  model: string;
+  input: string;
+  baseUrl?: string;
+  timeoutMs?: number;
+}): Promise<Float32Array> {
+  const baseUrl = (opts.baseUrl ?? readLlmConfigSafe().baseUrl).replace(/\/+$/, '');
+  const timeoutMs = opts.timeoutMs ?? 30_000;
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const r = await fetch(`${baseUrl}/api/embeddings`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: opts.model, prompt: opts.input, keep_alive: '30m' }),
+      signal: controller.signal
+    });
+    if (!r.ok) {
+      const text = await r.text().catch(() => '');
+      if (r.status === 404 && /model.*not found/i.test(text)) {
+        throw new LlmError('missing_model', `Embed model "${opts.model}" not installed.`);
+      }
+      throw new LlmError('http', `Ollama embed HTTP ${r.status}: ${text || r.statusText}`);
+    }
+    const json: any = await r.json();
+    const arr: number[] | undefined = json?.embedding;
+    if (!Array.isArray(arr) || arr.length === 0) {
+      throw new LlmError('empty', 'Ollama returned empty embedding array');
+    }
+    return Float32Array.from(arr);
+  } catch (err: any) {
+    if (err instanceof LlmError) throw err;
+    throw new LlmError('transport', `Embed request failed: ${err?.message ?? err}`);
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+/**
  * Lightweight reachability + model-availability probe used by the Configure
  * Save flow. Does NOT go through the chat queue — we want the result fast and
  * we don't want a stuck background diary call to gate the user's "Save" click.
@@ -221,10 +267,19 @@ export const llmHealth = new LlmHealth();
  * narrow enough that the UI can show actionable text.
  */
 export type LlmPingResult =
-  | { ok: true }
-  | { ok: false; reason: 'unreachable' | 'missing_model' | 'http' | 'empty'; detail?: string };
+  | { ok: true; embedOk?: boolean; embedDetail?: string }
+  | {
+      ok: false;
+      reason: 'unreachable' | 'missing_model' | 'http' | 'empty';
+      detail?: string;
+    };
 
-export async function pingLlm(opts: { baseUrl: string; model: string; timeoutMs?: number }): Promise<LlmPingResult> {
+export async function pingLlm(opts: {
+  baseUrl: string;
+  model: string;
+  embedModel?: string;
+  timeoutMs?: number;
+}): Promise<LlmPingResult> {
   const baseUrl = opts.baseUrl.replace(/\/+$/, '');
   const timeoutMs = opts.timeoutMs ?? 15_000;
 
@@ -262,24 +317,60 @@ export async function pingLlm(opts: { baseUrl: string; model: string; timeoutMs?
         body: JSON.stringify({ name: opts.model }),
         signal: controller.signal
       });
-      if (r.ok) {
-        return { ok: true };
-      }
-      const text = await r.text().catch(() => '');
-      if (r.status === 404 || /not found|no such model|does not exist/i.test(text)) {
+      if (!r.ok) {
+        const text = await r.text().catch(() => '');
+        if (r.status === 404 || /not found|no such model|does not exist/i.test(text)) {
+          return {
+            ok: false,
+            reason: 'missing_model',
+            detail: `Model "${opts.model}" is not pulled. Run: ollama pull ${opts.model}`
+          };
+        }
         return {
           ok: false,
-          reason: 'missing_model',
-          detail: `Model "${opts.model}" is not pulled. Run: ollama pull ${opts.model}`
+          reason: 'http',
+          detail: `Ollama HTTP ${r.status}: ${text || r.statusText}`
         };
       }
-      return { ok: false, reason: 'http', detail: `Ollama HTTP ${r.status}: ${text || r.statusText}` };
     } catch (err: any) {
       return { ok: false, reason: 'unreachable', detail: `Model check failed: ${err?.message ?? err}` };
     } finally {
       clearTimeout(t);
     }
   }
+
+  // Step 3 (optional) — embed model present? Doesn't fail the overall ping —
+  // graph-linking falls back to keyword mode if the embed model isn't pulled.
+  if (opts.embedModel) {
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const r = await fetch(`${baseUrl}/api/show`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: opts.embedModel }),
+        signal: controller.signal
+      });
+      if (r.ok) {
+        return { ok: true, embedOk: true };
+      }
+      const text = await r.text().catch(() => '');
+      if (r.status === 404 || /not found|no such model|does not exist/i.test(text)) {
+        return {
+          ok: true,
+          embedOk: false,
+          embedDetail: `Embed model "${opts.embedModel}" not pulled — graph-linking will fall back to keyword mode. Run: ollama pull ${opts.embedModel}`
+        };
+      }
+      return { ok: true, embedOk: false, embedDetail: `Embed check HTTP ${r.status}` };
+    } catch (err: any) {
+      return { ok: true, embedOk: false, embedDetail: `Embed check failed: ${err?.message ?? err}` };
+    } finally {
+      clearTimeout(t);
+    }
+  }
+
+  return { ok: true };
 }
 
 /**

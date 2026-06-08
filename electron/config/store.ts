@@ -12,13 +12,23 @@ export type LlmConfig = {
    * false so the orb starts red, prompting the user to open Configure.
    */
   verified: boolean;
+  /**
+   * Embedding model used to build the Obsidian knowledge-graph link index.
+   * Empty string disables embedding mode — linker falls back to keyword
+   * overlap. Recommended: `nomic-embed-text` (~270 MB, fast).
+   */
+  embedModel: string;
+  /** Append "## Related" wiki-link section to new chat summaries. */
+  autoLinkVault: boolean;
 };
 
 export const DEFAULT_CONFIG: LlmConfig = {
   mainModel: 'qwen2.5:14b',
   fallbackModel: 'qwen2.5:7b',
   baseUrl: 'http://127.0.0.1:11434',
-  verified: false
+  verified: false,
+  embedModel: 'nomic-embed-text',
+  autoLinkVault: true
 };
 
 let cache: LlmConfig | null = null;
@@ -36,7 +46,9 @@ export function loadLlmConfig(): LlmConfig {
       mainModel: typeof parsed.mainModel === 'string' && parsed.mainModel ? parsed.mainModel : DEFAULT_CONFIG.mainModel,
       fallbackModel: typeof parsed.fallbackModel === 'string' && parsed.fallbackModel ? parsed.fallbackModel : DEFAULT_CONFIG.fallbackModel,
       baseUrl: typeof parsed.baseUrl === 'string' && parsed.baseUrl ? parsed.baseUrl : DEFAULT_CONFIG.baseUrl,
-      verified: parsed.verified === true
+      verified: parsed.verified === true,
+      embedModel: typeof parsed.embedModel === 'string' ? parsed.embedModel : DEFAULT_CONFIG.embedModel,
+      autoLinkVault: typeof parsed.autoLinkVault === 'boolean' ? parsed.autoLinkVault : DEFAULT_CONFIG.autoLinkVault
     };
   } catch {
     cache = { ...DEFAULT_CONFIG };
@@ -55,6 +67,10 @@ export function saveLlmConfig(cfg: Partial<LlmConfig>): LlmConfig {
     mainModel !== current.mainModel ||
     fallbackModel !== current.fallbackModel ||
     baseUrl !== current.baseUrl;
+  const embedModel =
+    typeof cfg.embedModel === 'string' ? cfg.embedModel.trim() : current.embedModel;
+  const autoLinkVault =
+    typeof cfg.autoLinkVault === 'boolean' ? cfg.autoLinkVault : current.autoLinkVault;
   const next: LlmConfig = {
     mainModel,
     fallbackModel,
@@ -64,7 +80,9 @@ export function saveLlmConfig(cfg: Partial<LlmConfig>): LlmConfig {
         ? cfg.verified
         : fieldsChanged
           ? false
-          : current.verified
+          : current.verified,
+    embedModel,
+    autoLinkVault
   };
   fs.mkdirSync(path.dirname(configPath()), { recursive: true });
   fs.writeFileSync(configPath(), JSON.stringify(next, null, 2), 'utf8');
@@ -89,6 +107,8 @@ export function readLlmConfigSafe(): LlmConfig {
     mainModel: process.env.R2_LLM_MODEL || DEFAULT_CONFIG.mainModel,
     fallbackModel: process.env.R2_LLM_FALLBACK_MODEL || DEFAULT_CONFIG.fallbackModel,
     baseUrl: process.env.R2_LLM_URL || DEFAULT_CONFIG.baseUrl,
-    verified: false
+    verified: false,
+    embedModel: process.env.R2_LLM_EMBED_MODEL || DEFAULT_CONFIG.embedModel,
+    autoLinkVault: DEFAULT_CONFIG.autoLinkVault
   };
 }

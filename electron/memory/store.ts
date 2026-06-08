@@ -22,6 +22,14 @@ export class MemoryStore {
     this.vaultDir = vaultDir;
   }
 
+  /** Escape hatch for modules that need to declare/access additional tables
+   *  on the same SQLite handle (e.g. the embedding index). Returns the
+   *  initialized better-sqlite3 instance. Throws if `init()` hasn't run. */
+  rawDb(): Database.Database {
+    if (!this.db) throw new Error('MemoryStore.rawDb called before init()');
+    return this.db;
+  }
+
   async init() {
     fs.mkdirSync(path.dirname(this.dbPath), { recursive: true });
     fs.mkdirSync(this.vaultDir, { recursive: true });

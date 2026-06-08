@@ -24,6 +24,7 @@ import { getStatus, setupAll, VaultWatcher } from './vault/setup';
 import { NotesSync } from './vault/notesSync';
 import { ConversationsWatcher } from './vault/conversationsWatcher';
 import { ConversationSummaryWatcher } from './vault/conversationSummaryWatcher';
+import { EmbeddingIndex } from './vault/embeddingIndex';
 import { FormsWatcher } from './vault/formsWatcher';
 import { MediaLogger } from './media/logger';
 import { SentencesLogger } from './capture/sentencesLogger';
@@ -85,6 +86,7 @@ let vaultWatcher: VaultWatcher | null = null;
 let notesSync: NotesSync | null = null;
 let convWatcher: ConversationsWatcher | null = null;
 let convSummaryWatcher: ConversationSummaryWatcher | null = null;
+let embeddingIndex: EmbeddingIndex | null = null;
 let formsWatcher: FormsWatcher | null = null;
 let mediaLogger: MediaLogger | null = null;
 let sentencesLogger: SentencesLogger | null = null;
@@ -319,14 +321,25 @@ function wireIpc() {
     // Ping the new config. If it works, mark verified + clear missing flag.
     // If it fails, keep verified=false and report missing so the eye stays
     // red and the configure dialog can show the actual error.
-    const ping = await pingLlm({ baseUrl: saved.baseUrl, model: saved.mainModel });
+    const ping = await pingLlm({
+      baseUrl: saved.baseUrl,
+      model: saved.mainModel,
+      embedModel: saved.embedModel || undefined
+    });
     if (ping.ok) {
       const next = saveLlmConfig({ verified: true });
       llmHealth.clear();
       for (const w of BrowserWindow.getAllWindows()) {
         w.webContents.send('config:changed', next);
       }
-      return { ok: true, config: next };
+      // Surface embed-model status separately — never a hard failure since
+      // graph-linker falls back to keyword mode without it.
+      return {
+        ok: true,
+        config: next,
+        embedOk: ping.embedOk,
+        embedDetail: ping.embedDetail
+      };
     } else {
       llmHealth.reportMissing(saved.mainModel);
       for (const w of BrowserWindow.getAllWindows()) {
@@ -442,8 +455,17 @@ app.whenReady().then(async () => {
   convWatcher = new ConversationsWatcher(vp.r2Vault);
   convWatcher.start();
 
+  // Obsidian vault embedding index — feeds the "## Related" wiki-link
+  // generator on each new chat summary. Reuses the existing memory.db so we
+  // don't add a new DB dependency. Safe to construct even if the user hasn't
+  // pulled an embed model yet; the watcher will simply queue work that no-ops
+  // until a model is configured.
+  embeddingIndex = new EmbeddingIndex(memory.rawDb(), vp.r2Obsidian);
+  embeddingIndex.start();
+
   // AI summary of each conversation → R2Obsidian/conversations/<site>/<chatName>.md
   convSummaryWatcher = new ConversationSummaryWatcher(vp.r2Vault, vp.r2Obsidian);
+  convSummaryWatcher.setEmbeddingIndex(embeddingIndex);
   convSummaryWatcher.start();
   convSummaryWatcher.catchUpMissing();
 
@@ -665,6 +687,7 @@ app.on('before-quit', () => {
   notesSync?.stop();
   convWatcher?.stop();
   convSummaryWatcher?.stop();
+  embeddingIndex?.stop();
   formsWatcher?.stop();
   mediaLogger?.flush();
   sentencesLogger?.stop();
