@@ -197,8 +197,10 @@ function createConfigWindow() {
     return;
   }
   const { workArea } = screen.getPrimaryDisplay();
-  const W = 460;
-  const H = 480;
+  // Grew after the embed-model field + auto-link toggle landed. Old 460×480
+  // clipped Save/Cancel out of view on default-size displays.
+  const W = 540;
+  const H = 760;
   configWindow = new BrowserWindow({
     width: W,
     height: H,
