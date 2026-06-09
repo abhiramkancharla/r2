@@ -16,6 +16,8 @@ release/
 # ── Native (Swift) build artifacts ────────────────────────────────────────
 native/ax-helper/.build/
 native/ax-helper/Package.resolved
+native/notch-helper/.build/
+native/notch-helper/Package.resolved
 **/.swiftpm/
 
 # ── Secrets / environment ─────────────────────────────────────────────────
