@@ -25,6 +25,11 @@ export class ConversationSummaryWatcher {
   private debounceTimers = new Map<string, NodeJS.Timeout>();
   private queue: string[] = [];
   private processing: string | null = null;
+  // jsonPath → mdPath last written from it. Lets us delete the orphan
+  // markdown when ConversationStore renames `_unnamed-*.json` to
+  // `<chatName>.json` (the chokidar `unlink` event reports the old
+  // path, which we look up here).
+  private jsonToMd = new Map<string, string>();
 
   private embedIndex: EmbeddingIndex | null = null;
 
@@ -51,6 +56,7 @@ export class ConversationSummaryWatcher {
     this.watcher
       .on('add',    (p) => this.onChange(p))
       .on('change', (p) => this.onChange(p))
+      .on('unlink', (p) => this.onUnlink(p))
       .on('error',  (err) => console.error('[conv-md] watch error', err));
   }
 
@@ -63,6 +69,39 @@ export class ConversationSummaryWatcher {
       try { this.watcher.close(); } catch { /* */ }
       this.watcher = null;
     }
+  }
+
+  /**
+   * Boot-time orphan sweep. Deletes any `_unnamed-*.md` files in the
+   * Obsidian conversations tree that don't have a matching
+   * `_unnamed-*.json` source. These accumulated under the old behaviour
+   * where summarizeConversation would write a markdown even when the
+   * chat name hadn't resolved yet. With Phase 1 in place no new ones
+   * are created — this clears the historical mess.
+   */
+  sweepOrphanUnnamedMd() {
+    const root = path.join(this.obsidianDir, 'conversations');
+    let removed = 0;
+    let sites: string[] = [];
+    try { sites = fs.readdirSync(root); } catch { return; }
+    for (const site of sites) {
+      const siteDir = path.join(root, site);
+      let entries: string[] = [];
+      try { entries = fs.readdirSync(siteDir); } catch { continue; }
+      for (const f of entries) {
+        if (!f.startsWith('_unnamed-') || !f.endsWith('.md')) continue;
+        const mdPath = path.join(siteDir, f);
+        const jsonName = f.slice(0, -3) + '.json';
+        const jsonPath = path.join(this.convDir, site, jsonName);
+        // Only delete the markdown if the JSON it came from is gone.
+        // Keeps in-progress unnamed JSONs (rare with Phase 1) covered.
+        if (!fs.existsSync(jsonPath)) {
+          try { fs.rmSync(mdPath, { force: true }); removed += 1; }
+          catch { /* */ }
+        }
+      }
+    }
+    if (removed > 0) console.log(`[conv-md] swept ${removed} orphan _unnamed-*.md`);
   }
 
   /**
@@ -87,6 +126,27 @@ export class ConversationSummaryWatcher {
       }
     }
     if (added > 0) console.log(`[conv-md] catchup queued ${added} missing summaries`);
+  }
+
+  /**
+   * Conversation JSON was deleted (typical case: ConversationStore renamed
+   * `_unnamed-*.json` to `<chatName>.json` once the chat name finally
+   * resolved). The markdown summary we wrote from the old path is now an
+   * orphan — delete it so the user only sees the correctly-named file.
+   * The new path will fire `add` separately and a fresh summary lands.
+   */
+  private onUnlink(jsonPath: string) {
+    const md = this.jsonToMd.get(jsonPath);
+    if (!md) return;
+    this.jsonToMd.delete(jsonPath);
+    try {
+      if (fs.existsSync(md)) {
+        fs.rmSync(md, { force: true });
+        console.log(`[conv-md] cleaned orphan ${path.relative(this.obsidianDir, md)}`);
+      }
+    } catch (err: any) {
+      console.warn(`[conv-md] orphan cleanup failed for ${md}: ${err?.message ?? err}`);
+    }
   }
 
   private onChange(jsonPath: string) {
@@ -121,6 +181,9 @@ export class ConversationSummaryWatcher {
         const r = await summarizeConversation({ jsonPath, obsidianDir: this.obsidianDir });
         if (r.ok) {
           console.log(`[conv-md] ✓ ${r.site}/${r.chatName} → ${r.outputPath} (${r.totalDurationMs}ms)`);
+          // Remember the json → md mapping so onUnlink can clean it up
+          // if/when ConversationStore renames the JSON.
+          this.jsonToMd.set(jsonPath, r.outputPath);
           // Fire-and-forget: append "## Related" wiki-links to the new summary.
           // Failures here MUST NOT block summary generation.
           linkChatToVault({

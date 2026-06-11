@@ -199,47 +199,223 @@ func snapshotText(_ root: AXUIElement) -> String {
 // also carries a non-empty title/value/description. Used to extract the
 // currently-active chat name from sidebar lists in native AI apps (Claude.app,
 // ChatGPT.app) whose window title doesn't reveal it.
-func findSelectedItemText(_ root: AXUIElement, depth: Int = 0, maxDepth: Int = 24, maxNodes: Int = 4000, visited: inout Int) -> String? {
-    if depth > maxDepth { return nil }
+/// Score an AXSelected node by its AXRole so we prefer real list rows
+/// over arbitrary UI controls that happen to carry AXSelected=true
+/// (toolbar buttons, segmented controls, focused text fields…). Higher
+/// score wins.
+private func roleScore(_ role: String) -> Int {
+    switch role {
+    // Strong: explicit list-row roles. The sidebar chat list lives here.
+    case "AXRow", "AXOutlineRow", "AXListItem", "AXTableRow":
+        return 100
+    // Cells inside lists / outlines.
+    case "AXCell":
+        return 80
+    // Static text that happens to be marked selected (e.g. selected list
+    // item rendered as plain text).
+    case "AXStaticText":
+        return 60
+    // Menu items — useful for some Electron apps.
+    case "AXMenuItem":
+        return 50
+    // Group containers that wrap a selectable row.
+    case "AXGroup":
+        return 30
+    // UI controls — almost never the chat name. Last resort.
+    case "AXButton", "AXCheckBox", "AXRadioButton", "AXPopUpButton":
+        return 10
+    case "AXTextField", "AXTextArea":
+        return 5
+    default:
+        return 20
+    }
+}
+
+private func readAnyAxText(_ el: AXUIElement) -> String? {
+    for attr in [
+        kAXTitleAttribute as CFString,
+        kAXValueAttribute as CFString,
+        kAXDescriptionAttribute as CFString,
+        "AXValueDescription" as CFString
+    ] {
+        var raw: CFTypeRef?
+        if AXUIElementCopyAttributeValue(el, attr, &raw) == .success,
+           let s = raw as? String {
+            let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !t.isEmpty { return t }
+        }
+    }
+    return nil
+}
+
+private struct SidebarCandidate {
+    let text: String
+    let role: String
+    let score: Int
+}
+
+/// Walk the AX tree under `root`, collect every AXSelected node that has
+/// readable text, score each by role. Used by `findSelectedItemText(in:)`
+/// to pick the best candidate. Bounded walk — same depth/node caps as
+/// the original implementation.
+private func collectSelectedCandidates(_ root: AXUIElement, depth: Int = 0, maxDepth: Int = 24, maxNodes: Int = 4000, visited: inout Int, out: inout [SidebarCandidate]) {
+    if depth > maxDepth { return }
     visited += 1
-    if visited > maxNodes { return nil }
+    if visited > maxNodes { return }
 
     var sel: CFTypeRef?
-    if AXUIElementCopyAttributeValue(root, kAXSelectedAttribute as CFString, &sel) == .success {
-        if let b = sel as? Bool, b {
-            for attr in [
-                kAXTitleAttribute as CFString,
-                kAXValueAttribute as CFString,
-                kAXDescriptionAttribute as CFString,
-                "AXValueDescription" as CFString
-            ] {
-                var raw: CFTypeRef?
-                if AXUIElementCopyAttributeValue(root, attr, &raw) == .success,
-                   let s = raw as? String,
-                   !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    return s.trimmingCharacters(in: .whitespacesAndNewlines)
-                }
-            }
-        }
+    if AXUIElementCopyAttributeValue(root, kAXSelectedAttribute as CFString, &sel) == .success,
+       let b = sel as? Bool, b,
+       let text = readAnyAxText(root) {
+        let role = axString(root, kAXRoleAttribute as CFString) ?? "?"
+        out.append(SidebarCandidate(text: text, role: role, score: roleScore(role)))
     }
     for attr in [kAXChildrenAttribute as CFString, "AXVisibleChildren" as CFString] {
         var children: CFTypeRef?
         if AXUIElementCopyAttributeValue(root, attr, &children) == .success,
            let kids = children as? [AXUIElement] {
             for k in kids {
-                if let r = findSelectedItemText(k, depth: depth + 1, maxDepth: maxDepth, maxNodes: maxNodes, visited: &visited) {
-                    return r
-                }
+                collectSelectedCandidates(k, depth: depth + 1, maxDepth: maxDepth, maxNodes: maxNodes, visited: &visited, out: &out)
             }
         }
     }
-    return nil
 }
 
-// Convenience wrapper used by callers that don't track visit count.
+/// Brand / placeholder strings that we should treat as "no chat name".
+/// Used by the topbar walk to discard breadcrumb leftovers.
+private let brandPlaceholderLower: Set<String> = [
+    "claude", "claude.ai", "chatgpt", "gpt", "gemini", "perplexity",
+    "new chat", "untitled", "home", "projects", "project", "search",
+    "library", "history", "settings"
+]
+
+private func isLikelyChatName(_ s: String) -> Bool {
+    let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+    if t.count < 3 { return false }
+    if t.count > 200 { return false }
+    let lower = t.lowercased()
+    if brandPlaceholderLower.contains(lower) { return false }
+    // Single emoji / single punctuation
+    if t.unicodeScalars.allSatisfy({ !$0.properties.isAlphabetic && !($0 >= "0" && $0 <= "9") }) {
+        return false
+    }
+    return true
+}
+
+/// Walk the window's AX tree for an AXToolbar and harvest its visible
+/// text children. The native AI apps (Claude.app, ChatGPT.app) render
+/// their topbar breadcrumb (`Project / Chat name`) as AXStaticText nodes
+/// inside an AXToolbar / AXGroup container. This catches the chat name
+/// without needing the sidebar walk to land on the right AXSelected row.
+///
+/// Strategy:
+///   1. Find every AXToolbar descendant (BFS, bounded).
+///   2. Collect plain text from each toolbar's subtree.
+///   3. If we see a breadcrumb pattern `A / B`, prefer the right side.
+///   4. Otherwise return the longest non-brand text string.
+func findTopbarChatName(in window: AXUIElement) -> String? {
+    var visited = 0
+    var toolbars: [AXUIElement] = []
+    collectToolbars(window, depth: 0, maxDepth: 24, maxNodes: 6000, visited: &visited, out: &toolbars)
+    guard !toolbars.isEmpty else { return nil }
+
+    var texts: [String] = []
+    for tb in toolbars {
+        var tbVisited = 0
+        collectTextDescendants(tb, depth: 0, maxDepth: 12, maxNodes: 2000, visited: &tbVisited, out: &texts)
+    }
+    if texts.isEmpty { return nil }
+
+    if ProcessInfo.processInfo.environment["R2_DEBUG"] != nil {
+        let preview = texts.prefix(8).map { "\"\(String($0.prefix(40)))\"" }.joined(separator: ", ")
+        rlog("topbar text candidates (\(texts.count)): \(preview)")
+    }
+
+    // 1. Breadcrumb: any string that contains " / " or " > ". Take the
+    //    rightmost segment after the last separator.
+    for raw in texts {
+        let candidate = breadcrumbTail(raw)
+        if !candidate.isEmpty, isLikelyChatName(candidate) {
+            return candidate
+        }
+    }
+
+    // 2. Otherwise return the longest non-brand text node.
+    let filtered = texts
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { isLikelyChatName($0) }
+    let best = filtered.sorted { $0.count > $1.count }.first
+    return best
+}
+
+private func breadcrumbTail(_ s: String) -> String {
+    // Look for " / " or " > " separators (with surrounding spaces) so
+    // we don't mangle chat names that legitimately contain "/" or ">".
+    let separators = [" / ", " › ", " > "]
+    var best: String = ""
+    for sep in separators {
+        if let r = s.range(of: sep, options: .backwards) {
+            let tail = String(s[r.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if tail.count > best.count { best = tail }
+        }
+    }
+    return best
+}
+
+private func collectToolbars(_ root: AXUIElement, depth: Int, maxDepth: Int, maxNodes: Int, visited: inout Int, out: inout [AXUIElement]) {
+    if depth > maxDepth { return }
+    visited += 1
+    if visited > maxNodes { return }
+    let role = axString(root, kAXRoleAttribute as CFString) ?? ""
+    if role == "AXToolbar" {
+        out.append(root)
+        return  // don't recurse INTO a toolbar; we'll harvest its text separately
+    }
+    for attr in [kAXChildrenAttribute as CFString, "AXVisibleChildren" as CFString] {
+        var children: CFTypeRef?
+        if AXUIElementCopyAttributeValue(root, attr, &children) == .success,
+           let kids = children as? [AXUIElement] {
+            for k in kids {
+                collectToolbars(k, depth: depth + 1, maxDepth: maxDepth, maxNodes: maxNodes, visited: &visited, out: &out)
+            }
+        }
+    }
+}
+
+private func collectTextDescendants(_ root: AXUIElement, depth: Int, maxDepth: Int, maxNodes: Int, visited: inout Int, out: inout [String]) {
+    if depth > maxDepth { return }
+    visited += 1
+    if visited > maxNodes { return }
+    if let t = readAnyAxText(root) {
+        out.append(t)
+    }
+    for attr in [kAXChildrenAttribute as CFString, "AXVisibleChildren" as CFString] {
+        var children: CFTypeRef?
+        if AXUIElementCopyAttributeValue(root, attr, &children) == .success,
+           let kids = children as? [AXUIElement] {
+            for k in kids {
+                collectTextDescendants(k, depth: depth + 1, maxDepth: maxDepth, maxNodes: maxNodes, visited: &visited, out: &out)
+            }
+        }
+    }
+}
+
+/// Returns the highest-scoring AXSelected text inside `window`, or nil.
+/// Prefers real list-row roles (AXRow / AXOutlineRow / AXListItem) over
+/// arbitrary controls. Emits debug info when `R2_DEBUG` is set.
 func findSelectedItemText(in window: AXUIElement) -> String? {
-    var v = 0
-    return findSelectedItemText(window, visited: &v)
+    var visited = 0
+    var candidates: [SidebarCandidate] = []
+    collectSelectedCandidates(window, visited: &visited, out: &candidates)
+    guard !candidates.isEmpty else { return nil }
+    candidates.sort { $0.score > $1.score }
+    if ProcessInfo.processInfo.environment["R2_DEBUG"] != nil {
+        let summary = candidates.prefix(5)
+            .map { "\($0.role)=\"\(String($0.text.prefix(40)))\"[\($0.score)]" }
+            .joined(separator: " | ")
+        rlog("sidebar AX candidates (\(candidates.count)): \(summary)")
+    }
+    return candidates.first?.text
 }
 
 final class ReplyWatcher {

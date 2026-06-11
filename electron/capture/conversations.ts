@@ -26,6 +26,7 @@ type ConversationFile = {
 };
 
 const UNNAMED_TTL_MS = 30 * 60_000; // window to retroactively rename
+const STICKY_NAMED_TTL_MS = 60 * 60_000; // route empty-name turns back to a recent named file
 
 /**
  * Append-only store of AI turns, grouped by chat (not by date).
@@ -44,6 +45,11 @@ export class ConversationStore {
   private recentUnnamed: Map<string, { file: string; lastTs: number }> = new Map();
   // (site|chatName) → cached path so repeat lookups are O(1).
   private nameToFile: Map<string, string> = new Map();
+  // (bundleId|site) → most-recent named file path + last-used ts.
+  // When a later turn arrives WITHOUT a chatName (AX walk failed and the
+  // Swift sticky cache expired) but came from the same app+site context,
+  // we append to this file instead of minting a fresh _unnamed-*.json.
+  private lastNamedByContext: Map<string, { file: string; lastTs: number }> = new Map();
   private unnamedSeq = 0;
 
   constructor(rootDir: string) {
@@ -131,16 +137,38 @@ export class ConversationStore {
       file = namedPath;
       this.nameToFile.set(`${site}|${chatName}`, file);
     } else {
-      // No name, no id. Use legacy _unnamed-* placeholder.
-      const recent = this.recentUnnamed.get(site);
-      if (recent && Date.now() - recent.lastTs <= UNNAMED_TTL_MS && fs.existsSync(recent.file)) {
-        file = recent.file;
+      // No name, no id. Three-step fallback:
+      //   1. Most-recent named file in the same (bundleId|site) context
+      //      within STICKY_NAMED_TTL_MS — handles the case where the
+      //      AX walk succeeded earlier in the session but fails now.
+      //   2. Active `_unnamed-*` file within UNNAMED_TTL_MS — original
+      //      retroactive-rename hook.
+      //   3. Fresh `_unnamed-<stamp>-<seq>.json`.
+      const ctxKey = `${t.bundleId || ''}|${site}`;
+      const sticky = this.lastNamedByContext.get(ctxKey);
+      if (sticky && Date.now() - sticky.lastTs <= STICKY_NAMED_TTL_MS && fs.existsSync(sticky.file)) {
+        file = sticky.file;
       } else {
-        const stamp = stampNow();
-        this.unnamedSeq += 1;
-        file = path.join(siteDir, `_unnamed-${stamp}-${this.unnamedSeq}.json`);
+        const recent = this.recentUnnamed.get(site);
+        if (recent && Date.now() - recent.lastTs <= UNNAMED_TTL_MS && fs.existsSync(recent.file)) {
+          file = recent.file;
+        } else {
+          const stamp = stampNow();
+          this.unnamedSeq += 1;
+          file = path.join(siteDir, `_unnamed-${stamp}-${this.unnamedSeq}.json`);
+        }
+        this.recentUnnamed.set(site, { file, lastTs: t.ts });
       }
-      this.recentUnnamed.set(site, { file, lastTs: t.ts });
+    }
+
+    // Track the most-recent named file per (bundleId|site) so future
+    // empty-name turns can route back to it. Only update when we actually
+    // landed on a named file (path basename is not `_unnamed-*` or
+    // `_id-*` — those are placeholders, not the user's stable identity).
+    const baseName = path.basename(file);
+    if (chatName && !baseName.startsWith('_unnamed-') && !baseName.startsWith('_id-')) {
+      const ctxKey = `${t.bundleId || ''}|${site}`;
+      this.lastNamedByContext.set(ctxKey, { file, lastTs: t.ts });
     }
 
     const log = this.readSafe(file) ?? this.makeShell(site, chatName, chatId, t.ts);
@@ -149,6 +177,9 @@ export class ConversationStore {
     log.turns.push(t);
     log.turns.sort((a, b) => a.ts - b.ts);
     this.writeAtomic(file, this.refresh(log, t.ts, log.chatName));
+    console.log(
+      `[conv-store] site=${site} bundleId=${t.bundleId || '-'} chatId=${chatId || '-'} chatName="${chatName || '-'}" → ${path.relative(this.dir, file)}`
+    );
   }
 
   // -------- internals --------

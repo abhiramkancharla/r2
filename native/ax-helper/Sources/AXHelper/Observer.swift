@@ -273,6 +273,17 @@ final class Manager {
     // pid → ("chatgpt"|"claude"|"gemini"|"perplexity"|"") from TS-side
     // URL-based site detection. Refreshed on each tracker snapshot.
     var siteHints: [pid_t: String] = [:]
+    // pid → last successfully-detected chatName + when. Used when the
+    // AX sidebar walk fails on a subsequent turn (Claude.app's AX tree
+    // is fragile across renders) so we don't churn between the real
+    // name and an empty placeholder mid-conversation. 5-min TTL.
+    var lastChatNameByPid: [pid_t: (name: String, ts: Double)] = [:]
+    let chatNameStickyTtl: Double = 5 * 60
+    // pid → last OCR attempt timestamp. Cheap throttle so we don't
+    // screenshot + OCR on every turn when the chat name simply isn't
+    // visible right now (e.g. sidebar collapsed). 10-second budget.
+    var lastOcrAttemptByPid: [pid_t: Double] = [:]
+    let ocrThrottleSeconds: Double = 10
     var urlPoller: UrlPoller?
 
     // Best-known URL for a pid. UrlPoller scrapes AXURL on the focused web
@@ -496,16 +507,53 @@ final class Manager {
             }
         }
         var chatName = parseChatName(site: w.site, title: freshTitle)
-        // Native apps (Claude.app) keep window title as just "Claude" — the
-        // real chat name lives in the sidebar as a selected list item. Walk
-        // the window tree for an AXSelected element with text content.
+        var chatNameSource = "title"
+        // Native apps (Claude.app) keep window title as just "Claude". Try
+        // the AXToolbar breadcrumb first — Claude.app renders the active
+        // chat name as part of the topbar text. Falls back to the
+        // AXSelected sidebar walk if the toolbar gives nothing.
         if chatName.isEmpty, let fw = fwOpt {
-            if let picked = findSelectedItemText(in: fw) {
+            if let tb = findTopbarChatName(in: fw), !tb.isEmpty {
+                chatName = tb
+                chatNameSource = "ax_toolbar"
+            } else if let picked = findSelectedItemText(in: fw) {
                 chatName = picked
+                chatNameSource = "ax_sidebar"
             }
         }
+        // OCR fallback — only for known AI desktop apps where AX is
+        // unreliable. Throttled per pid so we don't screenshot on every
+        // turn. Picks up the topbar breadcrumb pixel-wise when no AX
+        // tree path exposed it.
+        if chatName.isEmpty, let fw = fwOpt,
+           ["chatgpt", "claude", "gemini", "perplexity"].contains(w.site) {
+            let now = Date().timeIntervalSince1970
+            let last = lastOcrAttemptByPid[w.pid] ?? 0
+            if now - last >= ocrThrottleSeconds {
+                lastOcrAttemptByPid[w.pid] = now
+                if let ocr = captureTopbarTextViaOCR(window: fw), !ocr.isEmpty {
+                    chatName = ocr
+                    chatNameSource = "ocr_topbar"
+                }
+            }
+        }
+        // Sticky fallback: a prior turn from the same window already gave
+        // us a real name. Reuse it instead of shipping an empty string,
+        // which would otherwise create a new `_unnamed-*.json` per turn.
+        if chatName.isEmpty {
+            let now = Date().timeIntervalSince1970
+            if let cached = lastChatNameByPid[w.pid],
+               now - cached.ts <= chatNameStickyTtl,
+               !cached.name.isEmpty {
+                chatName = cached.name
+                chatNameSource = "sticky_cache"
+            }
+        } else {
+            // Refresh the cache whenever we resolve a real name.
+            lastChatNameByPid[w.pid] = (chatName, Date().timeIntervalSince1970)
+        }
         let liveUrl = urlForPid(w.pid)
-        rlog("ai_turn emit site=\(w.site) freshTitle=\"\(String(freshTitle.prefix(80)))\" → chatName=\"\(chatName)\" url=\"\(liveUrl)\" replyChars=\(trimmed.count)")
+        rlog("ai_turn emit site=\(w.site) freshTitle=\"\(String(freshTitle.prefix(80)))\" → chatName=\"\(chatName)\" source=\(chatNameSource) url=\"\(liveUrl)\" replyChars=\(trimmed.count)")
 
         let event: [String: Any] = [
             "type": "ai_turn",
@@ -541,11 +589,40 @@ final class Manager {
             }
         }
         var chatName = parseChatName(site: w.site, title: freshTitle)
+        var chatNameSource = "title"
         if chatName.isEmpty, let fw = fwOpt {
-            if let picked = findSelectedItemText(in: fw) {
+            if let tb = findTopbarChatName(in: fw), !tb.isEmpty {
+                chatName = tb
+                chatNameSource = "ax_toolbar"
+            } else if let picked = findSelectedItemText(in: fw) {
                 chatName = picked
+                chatNameSource = "ax_sidebar"
             }
         }
+        if chatName.isEmpty, let fw = fwOpt,
+           ["chatgpt", "claude", "gemini", "perplexity"].contains(w.site) {
+            let now = Date().timeIntervalSince1970
+            let last = lastOcrAttemptByPid[w.pid] ?? 0
+            if now - last >= ocrThrottleSeconds {
+                lastOcrAttemptByPid[w.pid] = now
+                if let ocr = captureTopbarTextViaOCR(window: fw), !ocr.isEmpty {
+                    chatName = ocr
+                    chatNameSource = "ocr_topbar"
+                }
+            }
+        }
+        if chatName.isEmpty {
+            let now = Date().timeIntervalSince1970
+            if let cached = lastChatNameByPid[w.pid],
+               now - cached.ts <= chatNameStickyTtl,
+               !cached.name.isEmpty {
+                chatName = cached.name
+                chatNameSource = "sticky_cache"
+            }
+        } else {
+            lastChatNameByPid[w.pid] = (chatName, Date().timeIntervalSince1970)
+        }
+        rlog("ai_turn (timeout) emit site=\(w.site) → chatName=\"\(chatName)\" source=\(chatNameSource)")
         let liveUrl = urlForPid(w.pid)
 
         let event: [String: Any] = [

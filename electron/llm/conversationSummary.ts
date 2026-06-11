@@ -34,12 +34,35 @@ export async function summarizeConversation(opts: {
     return { ok: false, site: String(parsed?.site ?? '?'), chatName: String(parsed?.chatName ?? '?'), reason: 'no turns' };
   }
   const site = String(parsed?.site ?? path.basename(path.dirname(opts.jsonPath)));
-  // chatName is what we display + use in the LLM payload. fileBase is the
-  // OUTPUT FILENAME — falls back to the JSON basename when chatName is
-  // missing so different unnamed chats don't all clobber `untitled.md`.
   const rawChatName = String(parsed?.chatName ?? '').trim();
-  const chatName = rawChatName || 'untitled';
-  const fileBase = rawChatName || path.basename(opts.jsonPath, '.json');
+  const rawChatId = String(parsed?.chatId ?? '').trim();
+  const jsonBase = path.basename(opts.jsonPath, '.json');
+
+  // Refuse to mint a markdown for a still-unidentified conversation. The
+  // JSON store uses `_unnamed-<stamp>-<seq>.json` as a placeholder while
+  // we wait for the chatName / chatId to resolve from the AX walk or a
+  // later turn. Writing a markdown for it produces `_unnamed-*.md` files
+  // that never get cleaned up — exactly the user-visible bug. Once
+  // ConversationStore renames the JSON to `<chatName>.json` (or a real
+  // `_id-*.json`), the watcher fires again and this branch lets it
+  // through.
+  if (!rawChatName && !rawChatId && jsonBase.startsWith('_unnamed-')) {
+    return {
+      ok: false,
+      site,
+      chatName: '',
+      reason: 'no_chat_identity (waiting for chatName/chatId)'
+    };
+  }
+
+  // chatName is what we display + use in the LLM payload. fileBase is the
+  // OUTPUT FILENAME.
+  //   - prefer the human chat name
+  //   - else fall back to a stable id-prefixed basename (so `_id-<uuid>`
+  //     stays attached to a single .md across turns, instead of
+  //     re-deriving from the JSON path each run)
+  const chatName = rawChatName || (rawChatId ? `chat-${rawChatId.slice(0, 8)}` : jsonBase);
+  const fileBase = rawChatName || (rawChatId ? `chat-${rawChatId.slice(0, 8)}` : jsonBase);
   const startedAt = Number(parsed?.startedAt ?? turns[0]?.ts ?? Date.now());
   const date = isoDate(startedAt);
 
