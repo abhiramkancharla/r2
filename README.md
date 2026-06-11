@@ -2,7 +2,7 @@
 
 A behavior-aware desktop companion for macOS. Quietly watches what you do, builds a local memory of your work and interests, and occasionally surfaces something useful. Mostly silent. Fully local.
 
-> Think Jarvis, R2-D2, BD-1 — not "ChatGPT for X."
+AI has context about you before you even start your conversation. 
 
 ---
 
