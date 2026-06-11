@@ -25,7 +25,6 @@ import { NotesSync } from './vault/notesSync';
 import { ConversationsWatcher } from './vault/conversationsWatcher';
 import { ConversationSummaryWatcher } from './vault/conversationSummaryWatcher';
 import { EmbeddingIndex } from './vault/embeddingIndex';
-import { NotchHelper, resolveNotchBinPath } from './notch/notchHelper';
 import { FormsWatcher } from './vault/formsWatcher';
 import { MediaLogger } from './media/logger';
 import { SentencesLogger } from './capture/sentencesLogger';
@@ -88,7 +87,6 @@ let notesSync: NotesSync | null = null;
 let convWatcher: ConversationsWatcher | null = null;
 let convSummaryWatcher: ConversationSummaryWatcher | null = null;
 let embeddingIndex: EmbeddingIndex | null = null;
-let notchHelper: NotchHelper | null = null;
 let formsWatcher: FormsWatcher | null = null;
 let mediaLogger: MediaLogger | null = null;
 let sentencesLogger: SentencesLogger | null = null;
@@ -471,6 +469,7 @@ app.whenReady().then(async () => {
   convSummaryWatcher = new ConversationSummaryWatcher(vp.r2Vault, vp.r2Obsidian);
   convSummaryWatcher.setEmbeddingIndex(embeddingIndex);
   convSummaryWatcher.start();
+  convSummaryWatcher.sweepOrphanUnnamedMd();
   convSummaryWatcher.catchUpMissing();
 
   // Forms watcher — detects form/application sessions from sessions JSONs,
@@ -532,15 +531,6 @@ app.whenReady().then(async () => {
     notchWindow?.webContents.send('capture:status', s);
   });
   ax.start();
-
-  // Notch chat sidecar (Swift + DynamicNotchKit). UI-only for now —
-  // we log each send to the console so we can verify the wiring, but
-  // nothing is routed into the LLM yet. Functional wiring lands later.
-  notchHelper = new NotchHelper(resolveNotchBinPath(app.getAppPath()));
-  notchHelper.on('ready', () => console.log('[notch] sidecar ready'));
-  notchHelper.on('send', (e) => console.log(`[notch] send (ui-only): ${e.text}`));
-  notchHelper.on('exit', (code) => console.log(`[notch] sidecar exited (code=${code})`));
-  notchHelper.start();
 
   // Live session timeline → ~/R2Vault/sessions/YYYY-MM-DD.json
   sessions = new SessionLogger({
@@ -701,7 +691,6 @@ app.on('before-quit', () => {
   convWatcher?.stop();
   convSummaryWatcher?.stop();
   embeddingIndex?.stop();
-  notchHelper?.stop();
   formsWatcher?.stop();
   mediaLogger?.flush();
   sentencesLogger?.stop();

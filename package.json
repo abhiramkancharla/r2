@@ -7,14 +7,12 @@
   "scripts": {
     "dev:next": "next dev -p 3000",
     "dev:ax": "swift build --package-path native/ax-helper",
-    "dev:notch": "swift build --package-path native/notch-helper",
-    "dev:electron": "wait-on http://localhost:3000 && npm run dev:ax && npm run dev:notch && tsc -p electron/tsconfig.json && cross-env NODE_ENV=development electron dist/electron/main.js",
+    "dev:electron": "wait-on http://localhost:3000 && npm run dev:ax && tsc -p electron/tsconfig.json && cross-env NODE_ENV=development electron dist/electron/main.js",
     "dev": "concurrently -k -n NEXT,ELEC -c blue,magenta \"npm:dev:next\" \"npm:dev:electron\"",
     "build:next": "cross-env BUILD_TARGET=electron next build",
     "build:electron": "tsc -p electron/tsconfig.json",
     "build:ax": "swift build -c release --package-path native/ax-helper",
-    "build:notch": "swift build -c release --package-path native/notch-helper",
-    "build": "npm run build:ax && npm run build:notch && npm run build:next && npm run build:electron",
+    "build": "npm run build:ax && npm run build:next && npm run build:electron",
     "dist": "bash scripts/dist-publish.sh local",
     "dist:publish": "bash scripts/dist-publish.sh publish",
     "dist:sideload": "bash scripts/dist-publish.sh sideload",
@@ -84,10 +82,6 @@
       {
         "from": "native/ax-helper/.build/release/AXHelper",
         "to": "bin/ax-helper"
-      },
-      {
-        "from": "native/notch-helper/.build/release/NotchHelper",
-        "to": "bin/notch-helper"
       }
     ],
     "asarUnpack": [
